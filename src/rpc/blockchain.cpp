@@ -1079,13 +1079,9 @@ static UniValue BIP9SoftForkDesc(const Consensus::Params& consensusParams, Conse
 {
     UniValue rv(UniValue::VOBJ);
     const ThresholdState thresholdState = VersionBitsTipState(consensusParams, id);
-    switch (thresholdState) {
-    case THRESHOLD_DEFINED: rv.push_back(Pair("status", "defined")); break;
-    case THRESHOLD_STARTED: rv.push_back(Pair("status", "started")); break;
-    case THRESHOLD_LOCKED_IN: rv.push_back(Pair("status", "locked_in")); break;
-    case THRESHOLD_ACTIVE: rv.push_back(Pair("status", "active")); break;
-    case THRESHOLD_FAILED: rv.push_back(Pair("status", "failed")); break;
-    }
+    bool isLockedIn = THRESHOLD_LOCKED_IN == thresholdState || THRESHOLD_ACTIVE == thresholdState;
+    bool isPossible = THRESHOLD_LOCKED_IN == thresholdState || THRESHOLD_ACTIVE == thresholdState;    
+    bool isActive = THRESHOLD_ACTIVE == thresholdState || THRESHOLD_ACTIVE == thresholdState;
     if (THRESHOLD_STARTED == thresholdState)
     {
         rv.push_back(Pair("bit", consensusParams.vDeployments[id].bit));
@@ -1093,17 +1089,29 @@ static UniValue BIP9SoftForkDesc(const Consensus::Params& consensusParams, Conse
     rv.push_back(Pair("startTime", consensusParams.vDeployments[id].nStartTime));
     rv.push_back(Pair("timeout", consensusParams.vDeployments[id].nTimeout));
     rv.push_back(Pair("since", VersionBitsTipStateSinceHeight(consensusParams, id)));
-    if (THRESHOLD_STARTED == thresholdState)
+    if (thresholdState > THRESHOLD_DEFINED && thresholdState < THRESHOLD_ACTIVE)
     {
         UniValue statsUV(UniValue::VOBJ);
         BIP9Stats statsStruct = VersionBitsTipStatistics(consensusParams, id);
+        isLockedIn = (statsStruct.count >= statsStruct.threshold) || isLockedIn;
+        isPossible = isPossible || statsStruct.possible;
         statsUV.push_back(Pair("period", statsStruct.period));
         statsUV.push_back(Pair("threshold", statsStruct.threshold));
         statsUV.push_back(Pair("elapsed", statsStruct.elapsed));
         statsUV.push_back(Pair("count", statsStruct.count));
-        statsUV.push_back(Pair("possible", statsStruct.possible));
+        statsUV.push_back(Pair("possible", isPossible));
+        statsUV.push_back(Pair("locked", isLockedIn));
+        statsUV.push_back(Pair("active", isActive));
         rv.push_back(Pair("statistics", statsUV));
     }
+    switch (thresholdState) {
+    case THRESHOLD_DEFINED: rv.push_back(Pair("status", "defined")); rv.push_back(Pair("statusNext", "started")); break;
+    case THRESHOLD_STARTED: rv.push_back(Pair("status", "started")); rv.push_back(Pair("statusNext", (isLockedIn ? "locked_in" : (isPossible==true?"possible":"started")))); break;
+    case THRESHOLD_LOCKED_IN: rv.push_back(Pair("status", "locked_in")); rv.push_back(Pair("statusNext", "active")); break;
+    case THRESHOLD_ACTIVE: rv.push_back(Pair("status", "active")); rv.push_back(Pair("statusNext", "active")); break;
+    case THRESHOLD_FAILED: rv.push_back(Pair("status", "failed")); rv.push_back(Pair("statusNext", "failed")); break;
+    }
+
     return rv;
 }
 
