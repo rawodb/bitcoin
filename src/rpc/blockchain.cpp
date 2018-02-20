@@ -815,12 +815,20 @@ struct CCoinsStats
     uint256 hashBlock;
     uint64_t nTransactions;
     uint64_t nTransactionOutputs;
+    uint64_t nBech32TransactionOutputs;
+    uint64_t nP2SHTransactionOutputs;
+    uint64_t nP2PKHTransactionOutputs;
+    uint64_t nOtherTransactionOutputs;
     uint64_t nBogoSize;
     uint256 hashSerialized;
     uint64_t nDiskSize;
     CAmount nTotalAmount;
+    CAmount nBech32Amount;
+    CAmount nP2SHAmount;
+    CAmount nP2PKHAmount;
+    CAmount nOtherAmount;
 
-    CCoinsStats() : nHeight(0), nTransactions(0), nTransactionOutputs(0), nBogoSize(0), nDiskSize(0), nTotalAmount(0) {}
+    CCoinsStats() : nHeight(0), nTransactions(0), nTransactionOutputs(0), nBech32TransactionOutputs(0), nP2SHTransactionOutputs(0), nP2PKHTransactionOutputs(0), nOtherTransactionOutputs(0), nBogoSize(0), nDiskSize(0), nTotalAmount(0), nBech32Amount(0), nP2SHAmount(0), nP2PKHAmount(0), nOtherAmount(0) {}
 };
 
 static void ApplyStats(CCoinsStats &stats, CHashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
@@ -833,6 +841,20 @@ static void ApplyStats(CCoinsStats &stats, CHashWriter& ss, const uint256& hash,
         ss << VARINT(output.first + 1);
         ss << output.second.out.scriptPubKey;
         ss << VARINT(output.second.out.nValue);
+        if (output.second.out.scriptPubKey[0] == 0x00 && (output.second.out.scriptPubKey[1] == 0x14 || output.second.out.scriptPubKey[1] == 0x20)) {
+          stats.nBech32TransactionOutputs++;
+          stats.nBech32Amount += output.second.out.nValue;
+        } else if (output.second.out.scriptPubKey[0] == 0xA9 && output.second.out.scriptPubKey[1] == 0x14) {
+          stats.nP2SHTransactionOutputs++;
+          stats.nP2SHAmount += output.second.out.nValue;
+        } else if (output.second.out.scriptPubKey[0] == 0x76 && output.second.out.scriptPubKey[1] == 0xA9 && 
+                   output.second.out.scriptPubKey[2] == 0x14) {
+          stats.nP2PKHTransactionOutputs++;
+          stats.nP2PKHAmount += output.second.out.nValue;
+        } else {
+          stats.nOtherTransactionOutputs++;
+          stats.nOtherAmount += output.second.out.nValue;
+        }
         stats.nTransactionOutputs++;
         stats.nTotalAmount += output.second.out.nValue;
         stats.nBogoSize += 32 /* txid */ + 4 /* vout index */ + 4 /* height + coinbase */ + 8 /* amount */ +
@@ -842,7 +864,7 @@ static void ApplyStats(CCoinsStats &stats, CHashWriter& ss, const uint256& hash,
 }
 
 //! Calculate statistics about the unspent transaction output set
-static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
+static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats, uint32_t startHeight, uint32_t stopHeight)
 {
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
@@ -866,7 +888,8 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
                 outputs.clear();
             }
             prevkey = key.hash;
-            outputs[key.n] = std::move(coin);
+            if ((coin.nHeight >= startHeight || startHeight == 0) && (coin.nHeight <= stopHeight || stopHeight == 0))
+                outputs[key.n] = std::move(coin);
         } else {
             return error("%s: unable to read value", __func__);
         }
@@ -931,9 +954,9 @@ UniValue pruneblockchain(const JSONRPCRequest& request)
 
 UniValue gettxoutsetinfo(const JSONRPCRequest& request)
 {
-    if (request.fHelp || request.params.size() != 0)
+    if (request.fHelp || request.params.size() > 2)
         throw std::runtime_error(
-            "gettxoutsetinfo\n"
+            "gettxoutsetinfo start_height stop_height\n"
             "\nReturns statistics about the unspent transaction output set.\n"
             "Note this call may take some time.\n"
             "\nResult:\n"
@@ -948,23 +971,40 @@ UniValue gettxoutsetinfo(const JSONRPCRequest& request)
             "  \"total_amount\": x.xxx          (numeric) The total amount\n"
             "}\n"
             "\nExamples:\n"
-            + HelpExampleCli("gettxoutsetinfo", "")
-            + HelpExampleRpc("gettxoutsetinfo", "")
+            + HelpExampleCli("gettxoutsetinfo", "0 1000")
+            + HelpExampleRpc("gettxoutsetinfo", "0 1000")
         );
 
     UniValue ret(UniValue::VOBJ);
+    
+    int startHeight = 0;
+    int stopHeight = 0;
+    if (!request.params[0].isNull()) 
+        startHeight = request.params[0].get_int();
+    if (!request.params[1].isNull())
+        stopHeight = request.params[1].get_int();
 
     CCoinsStats stats;
     FlushStateToDisk();
-    if (GetUTXOStats(pcoinsdbview.get(), stats)) {
+    if (GetUTXOStats(pcoinsdbview.get(), stats, (uint32_t)startHeight, (uint32_t)stopHeight)) {
         ret.push_back(Pair("height", (int64_t)stats.nHeight));
+        ret.push_back(Pair("start_height", (int64_t)startHeight));
+        ret.push_back(Pair("stop_height",  (int64_t)stopHeight));
         ret.push_back(Pair("bestblock", stats.hashBlock.GetHex()));
         ret.push_back(Pair("transactions", (int64_t)stats.nTransactions));
         ret.push_back(Pair("txouts", (int64_t)stats.nTransactionOutputs));
+        ret.push_back(Pair("bech32_txouts", (int64_t)stats.nBech32TransactionOutputs));
+        ret.push_back(Pair("p2sh_txouts", (int64_t)stats.nP2SHTransactionOutputs));
+        ret.push_back(Pair("p2pkh_txouts", (int64_t)stats.nP2PKHTransactionOutputs));
+        ret.push_back(Pair("other_txouts", (int64_t)stats.nOtherTransactionOutputs));
         ret.push_back(Pair("bogosize", (int64_t)stats.nBogoSize));
         ret.push_back(Pair("hash_serialized_2", stats.hashSerialized.GetHex()));
         ret.push_back(Pair("disk_size", stats.nDiskSize));
         ret.push_back(Pair("total_amount", ValueFromAmount(stats.nTotalAmount)));
+        ret.push_back(Pair("bech32_amount", ValueFromAmount(stats.nBech32Amount)));
+        ret.push_back(Pair("p2sh_amount", ValueFromAmount(stats.nP2SHAmount)));
+        ret.push_back(Pair("p2pkh_amount", ValueFromAmount(stats.nP2PKHAmount)));
+        ret.push_back(Pair("other_amount", ValueFromAmount(stats.nOtherAmount)));
     } else {
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to read UTXO set");
     }
